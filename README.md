@@ -36,6 +36,16 @@ npm run lint
 npm run build
 ```
 
+`npm run lint` also enforces the 500-line source-file limit.
+
+## Architecture
+
+- `app/page.tsx` composes the scanner and owns only cross-feature session coordination.
+- `app/scanner/components/` contains focused interface regions and dialogs.
+- `app/scanner/hooks/` owns page collections, OCR, PDF export, camera capture, local-library state, and PWA lifecycle independently.
+- `app/scanner/image-processing.ts`, `ocr.ts`, `pdf-export.ts`, and `edge-detection.ts` contain browser processing services with no interface state.
+- `app/local-library.ts` is the persistence boundary for OPFS and IndexedDB.
+
 ## Open-source libraries
 
 - A lightweight Canvas 2D mesh transform for perspective correction without a large computer-vision runtime
