@@ -39,6 +39,8 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
+import type { jsPDF as JsPDF } from "jspdf";
+import Link from "next/link";
 import { ChangeEvent, DragEvent, PointerEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   deleteDocument as deleteLibraryDocument,
@@ -50,6 +52,7 @@ import {
 } from "./local-library";
 
 type Point = { x: number; y: number };
+type OcrLine = { text: string; x: number; y: number; width: number; height: number };
 type FilterMode = "color" | "enhance" | "gray" | "bw";
 type ScanPage = {
   id: string;
@@ -65,6 +68,8 @@ type ScanPage = {
   brightness: number;
   contrast: number;
   ocr: string;
+  ocrLines: OcrLine[];
+  ocrLayoutVersion: number;
   ocrStatus: "idle" | "running" | "done" | "error";
   processingStatus: "queued" | "processing" | "ready" | "error";
 };
@@ -133,7 +138,18 @@ function detectDocumentCornersInWorker(blob: Blob): Promise<Point[]> {
   });
 }
 
-type LocalOcrWorker = { recognize: (image: HTMLCanvasElement) => Promise<{ data: { text: string } }> };
+type OcrBlock = {
+  paragraphs: Array<{
+    lines: Array<{ text: string; bbox: { x0: number; y0: number; x1: number; y1: number } }>;
+  }>;
+};
+type LocalOcrWorker = {
+  recognize: (
+    image: HTMLCanvasElement,
+    options?: Record<string, never>,
+    output?: { text: boolean; blocks: boolean },
+  ) => Promise<{ data: { text: string; blocks: OcrBlock[] | null } }>;
+};
 type OcrProgressEvent = { status: string; progress?: number };
 let ocrModulePromise: Promise<typeof import("tesseract.js")> | null = null;
 let ocrWorkerPromise: Promise<LocalOcrWorker> | null = null;
@@ -181,6 +197,58 @@ function getOcrWorker(): Promise<LocalOcrWorker> {
 function getPdfModule() {
   if (!pdfModulePromise) pdfModulePromise = import("jspdf");
   return pdfModulePromise;
+}
+
+function normalizeOcrLines(blocks: OcrBlock[] | null, canvas: HTMLCanvasElement): OcrLine[] {
+  if (!blocks?.length || !canvas.width || !canvas.height) return [];
+  return blocks.flatMap((block) => block.paragraphs.flatMap((paragraph) => paragraph.lines)).map((line) => ({
+    text: line.text.trim(),
+    x: Math.max(0, Math.min(1, line.bbox.x0 / canvas.width)),
+    y: Math.max(0, Math.min(1, line.bbox.y0 / canvas.height)),
+    width: Math.max(0, Math.min(1, (line.bbox.x1 - line.bbox.x0) / canvas.width)),
+    height: Math.max(0, Math.min(1, (line.bbox.y1 - line.bbox.y0) / canvas.height)),
+  })).filter((line) => line.text && line.width > 0 && line.height > 0);
+}
+
+function textForPositionedLines(page: ScanPage): OcrLine[] {
+  const lines = page.ocrLines ?? [];
+  if (!lines.length) return [];
+  const normalized = (value: string) => value.replace(/\s+/g, " ").trim();
+  if (normalized(lines.map((line) => line.text).join(" ")) === normalized(page.ocr)) return lines;
+
+  const words = page.ocr.trim().split(/\s+/).filter(Boolean);
+  let cursor = 0;
+  return lines.map((line, index) => {
+    if (index === lines.length - 1) return { ...line, text: words.slice(cursor).join(" ") };
+    const targetLength = Math.max(1, line.text.trim().length);
+    const lineWords: string[] = [];
+    let length = 0;
+    while (cursor < words.length && (length < targetLength || !lineWords.length)) {
+      const word = words[cursor++];
+      lineWords.push(word);
+      length += word.length + 1;
+    }
+    return { ...line, text: lineWords.join(" ") };
+  }).filter((line) => line.text);
+}
+
+function addPositionedOcrLayer(pdf: JsPDF, page: ScanPage, x: number, y: number, width: number, height: number) {
+  pdf.setFont("helvetica", "normal");
+  for (const line of textForPositionedLines(page)) {
+    const lineX = x + line.x * width;
+    const lineY = y + line.y * height;
+    const lineWidth = Math.max(0.1, line.width * width);
+    const lineHeight = Math.max(0.1, line.height * height);
+    const fontSize = Math.max(1, lineHeight * 72 / 25.4);
+    pdf.setFontSize(fontSize);
+    const naturalWidth = pdf.getTextWidth(line.text);
+    const horizontalScale = naturalWidth > 0 ? Math.max(0.15, Math.min(6, lineWidth / naturalWidth)) : 1;
+    pdf.text(line.text, lineX, lineY, {
+      baseline: "top",
+      horizontalScale,
+      renderingMode: "invisible",
+    });
+  }
 }
 
 function loadImage(src: string) {
@@ -361,6 +429,8 @@ async function fileToPage(file: File): Promise<ScanPage> {
     brightness: 0,
     contrast: 12,
     ocr: "",
+    ocrLines: [],
+    ocrLayoutVersion: 0,
     ocrStatus: "idle",
     processingStatus: "queued",
   };
@@ -604,7 +674,12 @@ export default function Home() {
 
   const updateSelected = (changes: Partial<ScanPage>) => {
     if (!selected) return;
-    setPages((current) => current.map((page) => page.id === selected.id ? { ...page, ...changes } : page));
+    const geometryChanged = "corners" in changes || "rotation" in changes || "flipX" in changes || "flipY" in changes;
+    setPages((current) => current.map((page) => page.id === selected.id ? {
+      ...page,
+      ...(geometryChanged ? { ocrLines: [], ocrLayoutVersion: 0, ocrStatus: page.ocr ? "idle" as const : page.ocrStatus } : {}),
+      ...changes,
+    } : page));
   };
 
   useEffect(() => {
@@ -762,7 +837,7 @@ export default function Home() {
   };
 
   const recognizePages = async (targets: ScanPage[]) => {
-    const recognized = new Map<string, string>();
+    const recognized = new Map<string, { text: string; lines: OcrLine[] }>();
     let activeIndex = 0;
     setPages((current) => current.map((page) => targets.some((target) => target.id === page.id) ? { ...page, ocrStatus: "running" } : page));
     try {
@@ -778,10 +853,11 @@ export default function Home() {
         setBusy(`Reading page ${index + 1} of ${targets.length}…`);
         const latest = pages.find((page) => page.id === target.id) ?? target;
         const canvas = await renderPage(latest, 1800);
-        const result = await worker.recognize(canvas);
+        const result = await worker.recognize(canvas, {}, { text: true, blocks: true });
         const text = result.data.text.trim();
-        recognized.set(target.id, text);
-        setPages((current) => current.map((page) => page.id === target.id ? { ...page, ocr: text, ocrStatus: "done" } : page));
+        const lines = normalizeOcrLines(result.data.blocks, canvas);
+        recognized.set(target.id, { text, lines });
+        setPages((current) => current.map((page) => page.id === target.id ? { ...page, ocr: text, ocrLines: lines, ocrLayoutVersion: 1, ocrStatus: "done" } : page));
       }
       return recognized;
     } catch (error) {
@@ -834,11 +910,14 @@ export default function Home() {
     try {
       let exportPages = pages;
       if (searchable) {
-        const missingOcr = pages.filter((page) => !page.ocr.trim());
+        const missingOcr = pages.filter((page) => page.ocrLayoutVersion !== 1);
         if (missingOcr.length) {
           try {
             const recognized = await recognizePages(missingOcr);
-            exportPages = pages.map((page) => recognized.has(page.id) ? { ...page, ocr: recognized.get(page.id) ?? "", ocrStatus: "done" } : page);
+            exportPages = pages.map((page) => {
+              const result = recognized.get(page.id);
+              return result ? { ...page, ocr: result.text, ocrLines: result.lines, ocrLayoutVersion: 1, ocrStatus: "done" as const } : page;
+            });
           } catch {
             notify("Searchable PDF export stopped because OCR did not finish. Retry or turn off searchable text.");
             return;
@@ -863,17 +942,7 @@ export default function Home() {
         const x = (size[0] - width) / 2;
         const y = (size[1] - height) / 2;
         pdf.addImage(canvas.toDataURL("image/jpeg", quality / 100), "JPEG", x, y, width, height, undefined, "FAST");
-        if (searchable && page.ocr) {
-          pdf.setFontSize(4);
-          let lines = pdf.splitTextToSize(page.ocr, availableWidth);
-          const initialLineHeight = 4 * 1.05 * 25.4 / 72;
-          if (lines.length * initialLineHeight > availableHeight) {
-            const fittedSize = Math.max(1, 4 * availableHeight / (lines.length * initialLineHeight));
-            pdf.setFontSize(fittedSize);
-            lines = pdf.splitTextToSize(page.ocr, availableWidth);
-          }
-          pdf.text(lines, margin, margin, { baseline: "top", lineHeightFactor: 1.05, renderingMode: "invisible" });
-        }
+        if (searchable && page.ocr && page.ocrLayoutVersion === 1) addPositionedOcrLayer(pdf, page, x, y, width, height);
       }
       pdf.setProperties({ title: confirmedName, subject: "Created locally in ScanNow!", creator: "ScanNow!" });
       pdf.save(`${confirmedName}.pdf`);
@@ -924,7 +993,13 @@ export default function Home() {
     try {
       const result = await loadLibraryDocument(documentId);
       revokePages(pages);
-      const restored: ScanPage[] = result.pages.map((page) => ({ ...page, ocrStatus: "idle", processingStatus: "ready" }));
+      const restored: ScanPage[] = result.pages.map((page) => ({
+        ...page,
+        ocrLines: page.ocrLines ?? [],
+        ocrLayoutVersion: page.ocrLayoutVersion ?? 0,
+        ocrStatus: "idle",
+        processingStatus: "ready",
+      }));
       setPages(restored);
       setCheckedPageIds([]);
       setSelectedId(restored[0]?.id ?? null);
@@ -1273,10 +1348,10 @@ export default function Home() {
     void addFiles(Array.from(event.dataTransfer.files));
   };
 
-  if (!appReady) return <AppLoader message={startupMessage} progress={startupProgress} />;
-
   return (
-    <main className="app-shell" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
+    <>
+    {!appReady && <AppLoader message={startupMessage} progress={startupProgress} />}
+    <main className="app-shell" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} aria-busy={!appReady}>
       <header className="topbar">
         <div className="brand-wrap">
           <button className="icon-button rail-toggle page-rail-toggle" onClick={() => setMobileRail((value) => !value)} aria-label={`${mobileRail ? "Hide" : "Show"} ${pages.length} document page${pages.length === 1 ? "" : "s"}`} disabled={!pages.length}>
@@ -1542,7 +1617,7 @@ export default function Home() {
               </div>
               <label className="check-row"><input type="checkbox" checked={searchable} onChange={(event) => setSearchable(event.target.checked)} /><span><strong>Include searchable OCR text</strong><small>Missing pages are recognized automatically before the PDF is created.</small></span></label>
               <div className="export-summary"><FileText size={22} /><span><strong>{pages.length} uniformly sized page{pages.length === 1 ? "" : "s"}</strong><small>{pages.filter((page) => page.ocr).length} of {pages.length} pages have OCR text</small></span></div>
-              {pages.some((page) => !page.ocr) && searchable && <button className="text-action" onClick={() => void runOcr(pages.map((page) => page.id))} disabled={Boolean(busy)}><Sparkles size={17} /> Run OCR on all pages now</button>}
+              {pages.some((page) => page.ocrLayoutVersion !== 1) && searchable && <button className="text-action" onClick={() => void runOcr(pages.map((page) => page.id))} disabled={Boolean(busy)}><Sparkles size={17} /> Run OCR on all pages now</button>}
         </Modal>
       )}
 
@@ -1588,6 +1663,24 @@ export default function Home() {
       {busy && !pdfBuilding && <div className="busy-pill" role="status"><LoaderCircle className="spin" size={17} /> {busy}</div>}
       <div className="toast-stack" aria-live="polite">{toasts.map((toast) => <div className="toast" key={toast.id}><Check size={16} />{toast.message}</div>)}</div>
     </main>
+    {!pages.length && <section className="seo-content" id="about-scannow" aria-labelledby="about-scannow-title">
+      <div className="seo-inner">
+        <p className="eyebrow">Free private PDF scanner</p>
+        <h2 id="about-scannow-title">Scan documents to searchable PDF in your browser</h2>
+        <p className="seo-lede">ScanNow! turns camera photos or existing images into clean, correctly ordered PDFs. Cropping, image cleanup, OCR, local saving, and PDF creation happen on your device. Your document pages are not uploaded to a ScanNow! server.</p>
+        <div className="seo-grid">
+          <article><Crop size={23} /><h3>Crop and clean scans</h3><p>Detect page edges, correct perspective, rotate pages, and choose color, grayscale, or black-and-white output.</p></article>
+          <article><FileText size={23} /><h3>Create searchable PDFs</h3><p>On-device OCR places an invisible text layer over the matching words so exported PDFs can be searched and copied.</p></article>
+          <article><LockKeyhole size={23} /><h3>Keep documents private</h3><p>Use the scanner without creating an account. Saved projects stay in this browser and can remain available offline.</p></article>
+        </div>
+        <div className="seo-columns">
+          <div><h3>How to scan a document</h3><ol><li>Add pages with your camera or image library.</li><li>Review the automatic crop and page order.</li><li>Choose PDF options and download the finished file.</li></ol></div>
+          <div><h3>Common questions</h3><details><summary>Are scanned pages uploaded?</summary><p>No. Document processing and PDF creation run in the browser on your device.</p></details><details><summary>Can ScanNow! make searchable PDFs?</summary><p>Yes. Local OCR records where each line appears and adds aligned invisible text to the exported PDF.</p></details><details><summary>Does it work offline?</summary><p>After the app and OCR resources have loaded, ScanNow! can scan, edit, recognize text, and export without a network connection.</p></details></div>
+        </div>
+        <footer><span>ScanNow! is a browser-based document scanner and PDF creator.</span><Link href="/privacy">Privacy</Link></footer>
+      </div>
+    </section>}
+    </>
   );
 }
 

@@ -1,0 +1,11 @@
+# ScanNow!
+
+> ScanNow! is a free, browser-based document scanner and searchable PDF creator at https://scanner.fairway3games.com.
+
+ScanNow! accepts camera photos and existing page images. It provides multi-page ordering, perspective crop correction, rotation, image cleanup, on-device OCR, searchable PDF export, offline use, and a device-local document library.
+
+Document images and recognized text are processed locally in the browser and are not uploaded to a ScanNow! server.
+
+Key pages:
+- Scanner and product information: https://scanner.fairway3games.com/
+- Privacy: https://scanner.fairway3games.com/privacy
