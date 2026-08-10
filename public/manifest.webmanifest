@@ -1,0 +1,16 @@
+{
+  "name": "ScanNow! Private PDF Scanner",
+  "short_name": "ScanNow!",
+  "description": "Scan, clean, OCR, store, and export documents privately on your device.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ABA8B2",
+  "theme_color": "#4C4B63",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    { "src": "/app-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/app-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

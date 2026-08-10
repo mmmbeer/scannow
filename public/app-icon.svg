@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="ScanNow! app icon">
+  <rect width="512" height="512" rx="108" fill="#4C4B63"/>
+  <path d="M154 76h160l64 64v296H154z" fill="#fff"/>
+  <path d="M314 76v68h64" fill="#C3C3C3"/>
+  <path d="M202 205h128M202 253h104M202 301h128M202 349h72" stroke="#ABA8B2" stroke-width="20" stroke-linecap="round"/>
+  <path d="M94 278h324" stroke="#EE2677" stroke-width="24" stroke-linecap="round"/>
+  <path d="M398 249l48 29-48 29" fill="none" stroke="#EE2677" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
