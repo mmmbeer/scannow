@@ -12,6 +12,8 @@ export type LibraryPage = {
   brightness: number;
   contrast: number;
   ocr: string;
+  ocrLines?: Array<{ text: string; x: number; y: number; width: number; height: number }>;
+  ocrLayoutVersion?: number;
 };
 
 export type LibraryDocument = {
@@ -166,6 +168,8 @@ export async function saveDocument(input: {
       brightness: page.brightness,
       contrast: page.contrast,
       ocr: page.ocr,
+      ocrLines: page.ocrLines ?? [],
+      ocrLayoutVersion: page.ocrLayoutVersion ?? 0,
     });
   }
 
@@ -241,6 +245,8 @@ export async function loadDocument(documentId: string): Promise<{ document: Libr
       brightness: page.brightness,
       contrast: page.contrast,
       ocr: page.ocr,
+      ocrLines: page.ocrLines ?? [],
+      ocrLayoutVersion: page.ocrLayoutVersion ?? 0,
     });
   }
   database.close();
